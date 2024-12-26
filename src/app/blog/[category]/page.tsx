@@ -6,16 +6,17 @@ import Header from '@/components/header'
 import Link from 'next/link'
 import { Breadcrumb } from '@/components/blog/breadcrumb'
 interface Props {
-  params: {
+  params: Promise<{
     category: string
-  }
+  }>
 }
 
 export const revalidate = 3600 // revalidate every hour
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata(props: Props): Promise<Metadata> {
+  const params = await props.params;
   const category = await fetchCategory(params.category)
- 
+
   if (!category) {
     return {
       title: 'Category Not Found',
@@ -34,7 +35,8 @@ async function getCategoryArticles(categorySlug: string) {
   return articles
 }
 
-export default async function CategoryPage({ params }: Props) {
+export default async function CategoryPage(props: Props) {
+  const params = await props.params;
   const category = await fetchCategory(params.category)
 
   if (!category) {

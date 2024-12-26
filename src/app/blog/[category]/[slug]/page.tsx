@@ -11,10 +11,10 @@ import { Breadcrumb } from '@/components/blog/breadcrumb'
 import { CalendarIcon, UserIcon } from 'lucide-react'
 
 interface PageProps {
-  params: {
+  params: Promise<{
     category: string
     slug: string
-  }
+  }>
 }
 
 export const revalidate = 3600 // revalidate every hour
