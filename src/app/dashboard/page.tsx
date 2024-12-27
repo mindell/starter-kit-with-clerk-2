@@ -1,7 +1,7 @@
-import { UserButton } from "@clerk/nextjs";
 import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
-
+import { Navigation } from "@/components/navigation";
+import { SubscriptionStatus } from "@/components/subscription-status";
 
 export default async function Dashboard() {
   const { userId } = await auth();
@@ -11,22 +11,20 @@ export default async function Dashboard() {
     redirect("/");
   }
 
-  
   return (
-    <div className="min-h-screen p-8">
-      {/* Top Navigation */}
-      <nav className="absolute top-0 right-0 p-4">
-        <UserButton afterSignOutUrl="/" />
-      </nav>
+    <div className="min-h-screen bg-gray-50">
+      <Navigation />
+      
+      <main className="max-w-7xl mx-auto px-4 py-8">
+        <div className="space-y-8">
+          <div>
+            <h1 className="text-3xl font-bold">Dashboard</h1>
+            <p className="text-gray-600">Manage your subscription and account settings</p>
+          </div>
 
-      {/* Hero Section */}
-      <div className="pt-16 pb-8">
-        <h1 className="text-4xl font-bold text-center">
-          Welcome to Starter Kit
-        </h1>
-      </div>
-
-     
+          <SubscriptionStatus />
+        </div>
+      </main>
     </div>
   );
 }
