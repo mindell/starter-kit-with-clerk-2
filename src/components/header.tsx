@@ -18,6 +18,9 @@ export default function Header() {
 
           {/* Desktop Navigation */}
           <nav className="hidden md:flex items-center space-x-6">
+            <Link href="/blog" className="font-bold hover:text-emerald-300 transition-colors">
+              Blog
+            </Link>
             <SignedIn>
               <Link href="/dashboard" className="hover:text-emerald-300 transition-colors">
                 Dashboard

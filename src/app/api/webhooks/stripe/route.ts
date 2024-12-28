@@ -1,135 +1,173 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
+import Stripe from "stripe";
 import { createClient } from "@/utils/supabase/server";
 import { cookies } from "next/headers";
-import { generateDeterministicUUID } from "@/utils/supabase/auth";
-import Stripe from "stripe";
+import { resend } from "@/lib/resend";
+import { PaidSubscriptionEmail } from "@/emails/paid-subscription";
+import { ExpandedCustomer } from "@/types/stripe";
+import { subscriptionPrices } from "@/lib/subscription-prices";
 
-async function handleSubscriptionCreated(subscription: Stripe.Subscription) {
-  console.log('handleSubscriptionCreated', subscription);
+// Helper function to get Supabase client
+async function getSupabase() {
   const cookieStore = cookies();
-  const supabase = await createClient(cookieStore);
-  
-  const { userId } = subscription.metadata;
-  const supabaseUserId = generateDeterministicUUID(userId);
-  
-  const subscriptionData = {
-    user_id: supabaseUserId,
-    plan_id: subscription.metadata.planId,
-    subscription_id: subscription.id,
-    start_date: new Date(subscription.current_period_start * 1000),
-    end_date: new Date(subscription.current_period_end * 1000),
-    billing_interval: subscription.items.data[0].price.recurring?.interval.toUpperCase()+'LY' as 'MONTHLY' | 'YEARLY',
-    amount: subscription.items.data[0].price.unit_amount! / 100,
-    currency: subscription.currency.toUpperCase(),
-    next_billing_date: new Date(subscription.current_period_end * 1000),
-    payment_method: subscription.default_payment_method as string,
-    trial_ends_at: subscription.trial_end ? new Date(subscription.trial_end * 1000) : null
-  };
+  return await createClient(cookieStore);
+}
 
-  // First try to update existing subscription
+// Helper function to get plan details
+function getPlanFromPrice(priceId: string) {
+  const price = subscriptionPrices.find(p => p.stripePriceId === priceId);
+  if (!price) throw new Error('Invalid price ID');
+  return price;
+}
+
+async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
+  const supabase = await getSupabase();
+  
+  // Get subscription details
+  const subscription = await stripe.subscriptions.retrieve(session.subscription as string);
+  const price = subscription.items.data[0].price;
+  const plan = getPlanFromPrice(price.id);
+
+  // Update subscription in database with initial credits
   const { error: updateError } = await supabase
     .from('subscription')
-    .update(subscriptionData)
-    .eq('user_id', supabaseUserId);
+    .update({
+      subscription_id: subscription.id,
+      plan_id: plan.id,
+      billing_interval: price.recurring?.interval.toUpperCase(),
+      amount: price.unit_amount ? price.unit_amount / 100 : 0,
+      currency: price.currency.toUpperCase(),
+      start_date: new Date(subscription.current_period_start * 1000).toISOString(),
+      end_date: new Date(subscription.current_period_end * 1000).toISOString(),
+      cancelled: false,
+      credits_limit: plan.credits.maximum,
+      credits_remaining: plan.credits.monthly,
+      credits_reset_count: 0
+    })
+    .eq('user_id', session.client_reference_id);
 
-  // If no subscription exists (no rows updated), then insert
-  if (updateError?.code === 'PGRST116') {
-    const { error: insertError } = await supabase
-      .from('subscription')
-      .insert(subscriptionData);
-    
-    if (insertError) throw insertError;
-  } else if (updateError) {
-    throw updateError;
+  if (updateError) throw updateError;
+
+  // Send welcome email
+  const customer = await stripe.customers.retrieve(session.customer as string) as ExpandedCustomer;
+  if (customer.email) {
+    await resend.emails.send({
+      from: `${process.env.MAIL_FROM_NAME} <${process.env.MAIL_FROM_EMAIL}>`,
+      to: customer.email,
+      subject: 'Welcome to Your New Subscription!',
+      react: PaidSubscriptionEmail({
+        username: customer.email.split('@')[0],
+        planName: plan.name,
+        amount: plan.price,
+        currency: plan.currency,
+        credits: plan.credits.monthly,
+        billingInterval: plan.billingInterval,
+        nextBillingDate: new Date(subscription.current_period_end * 1000).toLocaleDateString('en-US', {
+          month: 'long',
+          day: 'numeric',
+          year: 'numeric'
+        })
+      })
+    });
   }
 }
 
 async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
-  const cookieStore = cookies();
-  const supabase = await createClient(cookieStore);
+  const supabase = await getSupabase();
   
-  const { userId } = subscription.metadata;
-  const supabaseUserId = generateDeterministicUUID(userId);
-
-  const subscriptionData = {
-    end_date: new Date(subscription.current_period_end * 1000),
-    next_billing_date: new Date(subscription.current_period_end * 1000),
-    payment_method: subscription.default_payment_method as string,
-    cancelled_at: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
-    trial_ends_at: subscription.trial_end ? new Date(subscription.trial_end * 1000) : null
-  };
-
-  const { error } = await supabase
+  const price = subscription.items.data[0].price;
+  const plan = getPlanFromPrice(price.id);
+  
+  // Get current subscription from database
+  const { data: currentSub } = await supabase
     .from('subscription')
-    .update(subscriptionData)
+    .select('credits_remaining, plan_id')
     .eq('subscription_id', subscription.id)
-    .eq('user_id', supabaseUserId);
+    .single();
 
-  if (error) throw error;
-}
+  // Calculate new credits based on plan change
+  let newCredits = plan.credits.monthly;
+  if (currentSub && currentSub.plan_id !== plan.id) {
+    // If upgrading and plan allows rollover, keep existing credits up to new maximum
+    if (plan.credits.rollover) {
+      newCredits = Math.min(
+        currentSub.credits_remaining + plan.credits.monthly,
+        plan.credits.maximum
+      );
+    }
+  }
 
-async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
-  const cookieStore = cookies();
-  const supabase = await createClient(cookieStore);
-  
-  const { userId } = subscription.metadata;
-  const supabaseUserId = generateDeterministicUUID(userId);
-
-  const { error } = await supabase
+  // Update subscription
+  const { error: updateError } = await supabase
     .from('subscription')
     .update({
-      cancelled_at: new Date(),
-      end_date: new Date(subscription.current_period_end * 1000)
+      plan_id: plan.id,
+      billing_interval: price.recurring?.interval.toUpperCase(),
+      amount: price.unit_amount ? price.unit_amount / 100 : 0,
+      currency: price.currency.toUpperCase(),
+      start_date: new Date(subscription.current_period_start * 1000).toISOString(),
+      end_date: new Date(subscription.current_period_end * 1000).toISOString(),
+      credits_limit: plan.credits.maximum,
+      credits_remaining: newCredits
     })
-    .eq('subscription_id', subscription.id)
-    .eq('user_id', supabaseUserId);
+    .eq('subscription_id', subscription.id);
 
-  if (error) throw error;
+  if (updateError) throw updateError;
 }
 
 async function handleInvoicePaid(invoice: Stripe.Invoice) {
-  const cookieStore = cookies();
-  const supabase = await createClient(cookieStore);
+  const supabase = await getSupabase();
   
+  // Only handle subscription invoices
   if (!invoice.subscription) return;
   
   const subscription = await stripe.subscriptions.retrieve(invoice.subscription as string);
-  const { userId } = subscription.metadata;
-  const supabaseUserId = generateDeterministicUUID(userId);
+  const price = subscription.items.data[0].price;
+  const plan = getPlanFromPrice(price.id);
 
-  // Create base invoice data without optional fields
-  const invoiceData: Record<string, any> = {
-    user_id: supabaseUserId,
-    subscription_id: invoice.subscription,
-    invoice_id: invoice.id,
-    amount: invoice.amount_paid / 100,
-    currency: invoice.currency.toUpperCase(),
-    status: invoice.status,
-    invoice_pdf: invoice.invoice_pdf,
-    hosted_invoice_url: invoice.hosted_invoice_url,
-    payment_intent_id: invoice.payment_intent as string,
-    period_start: new Date(invoice.period_start * 1000),
-    period_end: new Date(invoice.period_end * 1000)
-  };
+  // For renewals, reset or update credits
+  const { error: updateError } = await supabase
+    .from('subscription')
+    .update({
+      credits_remaining: plan.credits.monthly,
+      credits_reset_count: subscription.metadata.credits_reset_count 
+        ? parseInt(subscription.metadata.credits_reset_count) + 1 
+        : 1,
+      end_date: new Date(subscription.current_period_end * 1000).toISOString()
+    })
+    .eq('subscription_id', subscription.id);
 
-  // Add optional fields only if they exist in schema and have values
-  if (invoice.billing_reason) {
-    invoiceData.billing_reason = invoice.billing_reason;
+  if (updateError) throw updateError;
+
+  // Send payment confirmation email
+  if (invoice.customer_email) {
+    await resend.emails.send({
+      from: `${process.env.MAIL_FROM_NAME} <${process.env.MAIL_FROM_EMAIL}>`,
+      to: invoice.customer_email,
+      subject: 'Payment Received - Credits Renewed',
+      react: PaidSubscriptionEmail({
+        username: invoice.customer_email.split('@')[0],
+        planName: plan.name,
+        amount: plan.price,
+        credits: plan.credits.monthly,
+        currency: plan.currency,
+        billingInterval: plan.billingInterval,
+        nextBillingDate: new Date(subscription.current_period_end * 1000).toLocaleDateString('en-US', {
+          month: 'long',
+          day: 'numeric',
+          year: 'numeric'
+        })
+      })
+    });
   }
-
-  const { error } = await supabase
-    .from('invoice')
-    .upsert(invoiceData);
-
-  if (error) throw error;
 }
 
 export async function POST(req: Request) {
   const body = await req.text();
   const headrs = await headers();
-  const signature = headrs.get("Stripe-Signature") as string;
+  const signature = headrs.get("stripe-signature")!;
 
   let event: Stripe.Event;
 
@@ -139,21 +177,21 @@ export async function POST(req: Request) {
       signature,
       process.env.STRIPE_WEBHOOK_SECRET!
     );
-  } catch (error) {
-    console.error("Error verifying webhook signature:", error);
-    return new NextResponse("Invalid signature", { status: 400 });
+  } catch (err) {
+    console.error("Error verifying webhook:", err);
+    return new NextResponse(
+      `Webhook Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+      { status: 400 }
+    );
   }
 
   try {
     switch (event.type) {
-      case "customer.subscription.created":
-        await handleSubscriptionCreated(event.data.object as Stripe.Subscription);
+      case "checkout.session.completed":
+        await handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session);
         break;
       case "customer.subscription.updated":
         await handleSubscriptionUpdated(event.data.object as Stripe.Subscription);
-        break;
-      case "customer.subscription.deleted":
-        await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
         break;
       case "invoice.paid":
         await handleInvoicePaid(event.data.object as Stripe.Invoice);
@@ -162,7 +200,10 @@ export async function POST(req: Request) {
 
     return new NextResponse(null, { status: 200 });
   } catch (error) {
-    console.error("Error processing webhook:", error);
-    return new NextResponse("Webhook handler failed", { status: 500 });
+    console.error('Error processing webhook:', error);
+    return new NextResponse(
+      `Webhook Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      { status: 400 }
+    );
   }
 }

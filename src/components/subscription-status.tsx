@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { subscriptionPrices } from "@/lib/subscription-prices";
 import { SubscriptionManagement } from "./subscription-management";
 import { Card } from "./ui/card";
+import Link from "next/link";
 
 interface Subscription {
   id: string;
@@ -108,6 +109,19 @@ export function SubscriptionStatus() {
               <span className="font-medium">Next Billing Date:</span>{" "}
               {new Date(subscription.next_billing_date).toLocaleDateString()}
             </p>
+          )}
+          {subscription.plan_id === 'free' && (
+            <div className="mt-4 pt-4 border-t">
+              <p className="text-sm text-muted-foreground mb-3">
+                Upgrade to a paid plan to access premium features and support our service.
+              </p>
+              <Link 
+                href="/pricing" 
+                className="inline-flex items-center text-sm font-medium text-primary hover:text-primary/90"
+              >
+                View Available Plans →
+              </Link>
+            </div>
           )}
         </div>
       </Card>

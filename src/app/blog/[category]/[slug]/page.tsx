@@ -6,7 +6,7 @@ import { fetchArticle } from '@/lib/strapi'
 import { formatDate } from '@/lib/utils'
 import { serialize } from 'next-mdx-remote/serialize'
 import { MDXContent } from '@/components/blog/mdx-content'
-import Header from '@/components/header'
+import HeaderWrapper from '@/components/header-wrapper'
 import { Breadcrumb } from '@/components/blog/breadcrumb'
 import { CalendarIcon, UserIcon } from 'lucide-react'
 
@@ -80,7 +80,7 @@ export default async function ArticlePage(props: PageProps) {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <Header />
+      <HeaderWrapper />
       <div className="min-h-screen bg-gradient-to-b from-white to-gray-50">
         <div className="container max-w-4xl py-8 md:py-12 space-y-8 md:space-y-12 px-4 sm:px-6 lg:px-8">
           <Breadcrumb items={breadcrumbItems} />

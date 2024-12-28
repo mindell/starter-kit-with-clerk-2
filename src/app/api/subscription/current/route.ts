@@ -1,9 +1,11 @@
-import { auth } from "@clerk/nextjs/server";
+import { auth, currentUser } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { subscriptionPrices } from "@/lib/subscription-prices";
 import { cookies } from 'next/headers';
 import { generateDeterministicUUID } from "@/utils/supabase/auth";
+import { resend } from "@/lib/resend";
+import { FreeSubscriptionEmail } from "@/emails/free-subscription";
 
 export async function GET() {
   try {
@@ -16,8 +18,8 @@ export async function GET() {
 
     // Generate deterministic UUID for Supabase
     const supabaseUserId = generateDeterministicUUID(clerkUserId);
-    console.log('Clerk User ID:', clerkUserId);
-    console.log('Supabase User ID:', supabaseUserId);
+    // console.log('Clerk User ID:', clerkUserId);
+    // console.log('Supabase User ID:', supabaseUserId);
     
     // Create Supabase client with service role
     const supabase = await createClient(cookieStore);
@@ -40,8 +42,21 @@ export async function GET() {
         const endDate = new Date(startDate);
         endDate.setFullYear(endDate.getFullYear() + 1);
 
-        console.log('Creating subscription with user_id:', supabaseUserId);
+        // console.log('Creating subscription with user_id:', supabaseUserId);
         
+        const user = await currentUser();
+        if (!user) {
+          throw new Error('User not found');
+        }
+
+        const primaryEmail = user.emailAddresses.find(
+          (email) => email.id === user.primaryEmailAddressId
+        )?.emailAddress;
+
+        if (!primaryEmail) {
+          throw new Error('Email not found');
+        }
+
         const { data: newSubscription, error: createError } = await supabase
           .from('subscription')
           .insert([{
@@ -49,22 +64,34 @@ export async function GET() {
             plan_id: freeTier?.id,
             start_date: startDate.toISOString(),
             end_date: endDate.toISOString(),
-            billing_interval: freeTier?.billingInterval,
-            amount: freeTier?.price,
-            currency: freeTier?.currency,
+            email: primaryEmail,
+            billing_interval: 'MONTHLY',
+            amount: 0,
+            credits_limit: freeTier?.credits.maximum || 0,
+            credits_remaining: freeTier?.credits.monthly || 0,
+            credits_reset_count: 0
           }])
           .select()
           .single();
 
-        if (createError) {
-          console.error('[SUBSCRIPTION_CREATE_ERROR]', createError);
-          return new NextResponse(
-            JSON.stringify({ error: 'Failed to create subscription' }), 
-            { status: 500 }
-          );
-        }
+        if (createError) throw createError;
 
-        return new NextResponse(JSON.stringify(newSubscription));
+        // Send welcome email for free subscription
+        await resend.emails.send({
+          from: `${process.env.MAIL_FROM_NAME} <${process.env.MAIL_FROM_EMAIL}>`,
+          to: primaryEmail,
+          subject: 'Welcome to Your Free Subscription!',
+          react: FreeSubscriptionEmail({
+            username: primaryEmail.split('@')[0],
+            endDate: endDate.toLocaleDateString('en-US', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric'
+            })
+          })
+        });
+        // console.log('resendResponse', resendResponse);
+        return NextResponse.json(newSubscription);
       }
 
       return new NextResponse(JSON.stringify(currentSubscription));

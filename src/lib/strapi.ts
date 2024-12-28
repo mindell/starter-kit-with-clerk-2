@@ -15,6 +15,12 @@ const CONFIG = {
   cacheDuration: 5 * 60 * 1000, // 5 minutes in milliseconds
 } as const;
 
+// Constants for retry configuration
+const RETRY_ATTEMPTS = 3;
+const INITIAL_RETRY_DELAY = 1000; // 1 second
+const MAX_RETRY_DELAY = 5000; // 5 seconds
+const REQUEST_TIMEOUT = 10000; // 10 seconds
+
 // Custom error class
 class StrapiError extends Error {
   constructor(
@@ -28,7 +34,14 @@ class StrapiError extends Error {
   }
 }
 
+class StrapiEnvironmentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StrapiEnvironmentError';
+  }
+}
 
+// Types
 interface Pagination {
   page?: number;
   pageSize: number;
@@ -59,8 +72,6 @@ interface FetchOptions {
   fields?: string[];
 }
 
-
-
 // API client
 class StrapiClient {
   private static instance: StrapiClient;
@@ -89,30 +100,78 @@ class StrapiClient {
     fields,
     pagination,
   }: FetchOptions): Promise<StrapiListResponse<T> | StrapiSingleResponse<T>> {
-    try {
-      const filters = slug ? { slug: { $eq: slug } } : {};
-      const response = await axios.get(`${CONFIG.apiUrl}/api/${endpoint}`, {
-        params: {
-          filters: { ...filters, ...additionalFilters },
-          populate: populate ? populate : undefined,
-          sort,
-          status,
-          fields,
-          pagination,
-        },
-        headers: this.headers,
-      });
-      return response.data;
-    } catch (error) {
-      if (error instanceof AxiosError && error.response?.status === 404) {
-        notFound();
+    let attempt = 0;
+    let delay = INITIAL_RETRY_DELAY;
+
+    while (attempt < RETRY_ATTEMPTS) {
+      try {
+        // Verify Strapi configuration
+        if (!CONFIG.apiUrl || !CONFIG.apiToken) {
+          throw new StrapiEnvironmentError(
+            'Strapi environment variables are not properly configured. Please check STRAPI_API_URL and STRAPI_API_TOKEN.'
+          );
+        }
+
+        const filters = slug ? { slug: { $eq: slug } } : {};
+        const response = await axios.get(`${CONFIG.apiUrl}/api/${endpoint}`, {
+          params: {
+            filters: { ...filters, ...additionalFilters },
+            populate: populate ? populate : undefined,
+            sort,
+            status,
+            fields,
+            pagination,
+          },
+          headers: this.headers,
+          timeout: REQUEST_TIMEOUT,
+        });
+        return response.data;
+      } catch (error) {
+        if (error instanceof StrapiEnvironmentError) {
+          throw error;
+        }
+
+        if (error instanceof AxiosError) {
+          if (error.response?.status === 404) {
+            notFound();
+          }
+
+          // Don't retry on client errors (4xx)
+          if (error.response && error.response.status >= 400 && error.response.status < 500) {
+            throw new StrapiError(
+              'Failed to fetch from Strapi',
+              error.response.status,
+              error
+            );
+          }
+
+          // Check if we should retry
+          attempt++;
+          if (attempt === RETRY_ATTEMPTS) {
+            throw new StrapiError(
+              'Failed to fetch from Strapi after multiple attempts',
+              error.response?.status,
+              error
+            );
+          }
+
+          // Exponential backoff with jitter
+          await new Promise(resolve => 
+            setTimeout(resolve, delay + Math.random() * 1000)
+          );
+          delay = Math.min(delay * 2, MAX_RETRY_DELAY);
+          continue;
+        }
+
+        throw new StrapiError(
+          'Failed to fetch from Strapi',
+          undefined,
+          error
+        );
       }
-      throw new StrapiError(
-        'Failed to fetch from Strapi',
-        error instanceof AxiosError ? error.response?.status : undefined,
-        error
-      );
     }
+
+    throw new StrapiError('Failed to fetch from Strapi after maximum retries');
   }
 
   private async fetchSingle<T extends StrapiBaseFields>(options: FetchOptions): Promise<T> {
@@ -202,7 +261,7 @@ class StrapiClient {
 // Export singleton instance methods
 const strapiClient = StrapiClient.getInstance();
 
-
+// Exported functions
 export const fetchArticle = (slug: string): Promise<StrapiArticle> => strapiClient.fetchArticle(slug);
 export const fetchBlogCategoryArticles = (categorySlug: string):Promise<StrapiArticle[]> => strapiClient.fetchBlogCategoryArticles(categorySlug);
 export async function fetchAllArticles(options: {

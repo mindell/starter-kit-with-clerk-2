@@ -1,0 +1,2 @@
+ALTER TABLE subscription
+ADD COLUMN email VARCHAR(255);

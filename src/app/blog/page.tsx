@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import { fetchAllArticles } from '@/lib/strapi'
 import { BlogCard } from '@/components/blog/blog-card'
 import { BlogSearch } from '@/components/blog/blog-search'
-import Header from '@/components/header'
+import HeaderWrapper from '@/components/header-wrapper'
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL as string),
@@ -19,7 +19,7 @@ export default async function BlogPage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <Header />
+      <HeaderWrapper />
       <div className="min-h-screen bg-gradient-to-b from-white to-gray-50">
         <div className="container py-8 md:py-12 space-y-8 md:space-y-12 px-4 sm:px-6 lg:px-8">
           <div className="text-center max-w-3xl mx-auto">

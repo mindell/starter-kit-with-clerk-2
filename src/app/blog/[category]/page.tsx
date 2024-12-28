@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { BlogCard } from '@/components/blog/blog-card'
 import { fetchCategory, fetchBlogCategoryArticles } from '@/lib/strapi'
-import Header from '@/components/header'
+import HeaderWrapper from '@/components/header-wrapper'
 import Link from 'next/link'
 import { Breadcrumb } from '@/components/blog/breadcrumb'
 interface Props {
@@ -50,7 +50,7 @@ export default async function CategoryPage(props: Props) {
   ]
   return (
     <div className="flex flex-col min-h-screen">
-      <Header />
+      <HeaderWrapper />
       <div className="min-h-screen bg-gradient-to-b from-white to-gray-50">
         <div className="container py-8 md:py-12 space-y-8 md:space-y-12 px-4 sm:px-6 lg:px-8">
           <div className="space-y-6">

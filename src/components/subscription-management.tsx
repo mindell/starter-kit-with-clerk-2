@@ -85,15 +85,21 @@ export function SubscriptionManagement({ subscription }: SubscriptionManagementP
               </p>
             )}
           </div>
-          {!subscription.cancelled && (
-            <Button
-              variant="destructive"
-              onClick={() => setIsDialogOpen(true)}
-              disabled={isLoading}
-            >
-              Cancel Subscription
-            </Button>
-          )}
+          <div>
+            {subscription.cancelled ? (
+              <p className="text-sm text-muted-foreground">
+                Subscription cancelled
+              </p>
+            ) : (
+              <Button
+                variant="destructive"
+                onClick={() => setIsDialogOpen(true)}
+                disabled={isLoading}
+              >
+                Cancel Subscription
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
