@@ -31,7 +31,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   const plan = getPlanFromPrice(price.id);
 
   // Update subscription in database with initial credits
-  const { error: updateError } = await supabase
+  const { data: updatedSub, error: updateError } = await supabase
     .from('subscription')
     .update({
       subscription_id: subscription.id,
@@ -46,9 +46,31 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
       credits_remaining: plan.credits.monthly,
       credits_reset_count: 0
     })
-    .eq('user_id', session.client_reference_id);
+    .eq('user_id', session.client_reference_id)
+    .select()
+    .single();
 
   if (updateError) throw updateError;
+
+  // Log initial credit allocation
+  const { error: auditError } = await supabase
+    .from('subscription_audit_log')
+    .insert({
+      subscription_id: updatedSub.id,
+      action: 'initial_credit_allocation',
+      details: {
+        plan_id: plan.id,
+        credits_allocated: plan.credits.monthly,
+        credits_limit: plan.credits.maximum,
+        subscription_id: subscription.id,
+        billing_interval: price.recurring?.interval.toUpperCase()
+      }
+    });
+
+  if (auditError) {
+    console.error('Audit log error:', auditError);
+    // Don't throw, as the main operation succeeded
+  }
 
   // Send welcome email
   const customer = await stripe.customers.retrieve(session.customer as string) as ExpandedCustomer;
@@ -83,7 +105,7 @@ async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
   // Get current subscription from database
   const { data: currentSub } = await supabase
     .from('subscription')
-    .select('credits_remaining, plan_id')
+    .select('credits_remaining, plan_id, id')
     .eq('subscription_id', subscription.id)
     .single();
 
@@ -99,64 +121,94 @@ async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
     }
   }
 
-  // Update subscription
+  // Update subscription in database
   const { error: updateError } = await supabase
     .from('subscription')
     .update({
       plan_id: plan.id,
-      billing_interval: price.recurring?.interval.toUpperCase(),
-      amount: price.unit_amount ? price.unit_amount / 100 : 0,
-      currency: price.currency.toUpperCase(),
-      start_date: new Date(subscription.current_period_start * 1000).toISOString(),
-      end_date: new Date(subscription.current_period_end * 1000).toISOString(),
-      credits_limit: plan.credits.maximum,
-      credits_remaining: newCredits
+      credits_remaining: newCredits,
+      credits_limit: plan.credits.maximum
     })
     .eq('subscription_id', subscription.id);
 
   if (updateError) throw updateError;
+
+  // Log plan change and credit adjustment
+  if (currentSub) {
+    const { error: auditError } = await supabase
+      .from('subscription_audit_log')
+      .insert({
+        subscription_id: currentSub.id,
+        action: 'plan_change',
+        details: {
+          previous_plan: currentSub.plan_id,
+          new_plan: plan.id,
+          previous_credits: currentSub.credits_remaining,
+          new_credits: newCredits,
+          new_limit: plan.credits.maximum,
+          rollover_applied: plan.credits.rollover
+        }
+      });
+
+    if (auditError) {
+      console.error('Audit log error:', auditError);
+      // Don't throw, as the main operation succeeded
+    }
+  }
 }
 
 async function handleInvoicePaid(invoice: Stripe.Invoice) {
   const supabase = await getSupabase();
   
-  // Only handle subscription invoices
-  if (!invoice.subscription) return;
-  
   const subscription = await stripe.subscriptions.retrieve(invoice.subscription as string);
   const price = subscription.items.data[0].price;
   const plan = getPlanFromPrice(price.id);
 
-  // Get current subscription details for proper credit calculation
-  const { data: currentSub, error: fetchError } = await supabase
+  // Get current subscription from database
+  const { data: currentSub } = await supabase
     .from('subscription')
-    .select('credits_remaining, credits_reset_count')
+    .select('credits_remaining, credits_limit, id, credits_reset_count')
     .eq('subscription_id', subscription.id)
     .single();
 
-  if (fetchError) throw fetchError;
+  if (!currentSub) throw new Error('Subscription not found');
 
-  // Calculate new credits based on plan's rollover policy
-  let newCredits = plan.credits.monthly;
-  if (plan.credits.rollover && currentSub) {
-    // If rollover is allowed, add monthly credits but don't exceed maximum
-    newCredits = Math.min(
-      currentSub.credits_remaining + plan.credits.monthly,
-      plan.credits.maximum
-    );
-  }
+  // Calculate new credits (monthly allocation + rollover if applicable)
+  const newCredits = plan.credits.rollover
+    ? Math.min(currentSub.credits_remaining + plan.credits.monthly, plan.credits.maximum)
+    : plan.credits.monthly;
 
-  // For renewals, update credits and reset count
+  // Update subscription in database
   const { error: updateError } = await supabase
     .from('subscription')
     .update({
       credits_remaining: newCredits,
-      credits_reset_count: (currentSub?.credits_reset_count || 0) + 1,
-      end_date: new Date(subscription.current_period_end * 1000).toISOString()
+      end_date: new Date(subscription.current_period_end * 1000).toISOString(),
+      credits_reset_count: (currentSub.credits_reset_count || 0) + 1
     })
     .eq('subscription_id', subscription.id);
 
   if (updateError) throw updateError;
+
+  // Log monthly credit refresh
+  const { error: auditError } = await supabase
+    .from('subscription_audit_log')
+    .insert({
+      subscription_id: currentSub.id,
+      action: 'monthly_credit_refresh',
+      details: {
+        previous_credits: currentSub.credits_remaining,
+        monthly_allocation: plan.credits.monthly,
+        new_credits: newCredits,
+        rollover_applied: plan.credits.rollover,
+        invoice_id: invoice.id
+      }
+    });
+
+  if (auditError) {
+    console.error('Audit log error:', auditError);
+    // Don't throw, as the main operation succeeded
+  }
 
   // Send payment confirmation email
   if (invoice.customer_email) {

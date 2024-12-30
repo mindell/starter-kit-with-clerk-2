@@ -15,15 +15,40 @@ SET search_path = public
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  -- Update end_date for free subscriptions that have expired
+  -- Update end_date and reset credits for free subscriptions that have expired
   UPDATE subscription
   SET 
     -- Set new end_date to one month from current date
-    end_date = (CURRENT_DATE + INTERVAL '1 month')::timestamp
+    end_date = (CURRENT_DATE + INTERVAL '1 month')::timestamp,
+    -- Reset credits to monthly amount (10 for free tier)
+    credits_remaining = 10,
+    -- Increment the reset counter
+    credits_reset_count = COALESCE(credits_reset_count, 0) + 1
   WHERE 
     plan_id = 'free'
     AND end_date < CURRENT_TIMESTAMP
     AND NOT cancelled;  -- Don't refresh cancelled subscriptions
+
+  -- Log the refresh for auditing
+  INSERT INTO subscription_audit_log (
+    subscription_id,
+    action,
+    details,
+    created_at
+  )
+  SELECT 
+    id,
+    'credits_refresh',
+    json_build_object(
+      'credits_reset_to', 10,
+      'new_end_date', (CURRENT_DATE + INTERVAL '1 month')::timestamp
+    ),
+    CURRENT_TIMESTAMP
+  FROM subscription
+  WHERE 
+    plan_id = 'free'
+    AND end_date < CURRENT_TIMESTAMP
+    AND NOT cancelled;
 END;
 $$;
 

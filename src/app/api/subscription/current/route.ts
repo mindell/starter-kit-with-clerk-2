@@ -76,6 +76,25 @@ export async function GET() {
 
         if (createError) throw createError;
 
+        // Log initial free subscription creation
+        const { error: auditError } = await supabase
+          .from('subscription_audit_log')
+          .insert({
+            subscription_id: newSubscription.id,
+            action: 'free_subscription_created',
+            details: {
+              initial_credits: freeTier?.credits.monthly,
+              credits_limit: freeTier?.credits.maximum,
+              end_date: endDate.toISOString(),
+              user_email: primaryEmail
+            }
+          });
+
+        if (auditError) {
+          console.error('Audit log error:', auditError);
+          // Don't throw, as the main operation succeeded
+        }
+
         // Send welcome email for free subscription
         await resend.emails.send({
           from: `${process.env.MAIL_FROM_NAME} <${process.env.MAIL_FROM_EMAIL}>`,

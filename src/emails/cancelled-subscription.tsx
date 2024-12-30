@@ -52,7 +52,7 @@ export const CancelledSubscriptionEmail = ({
               </Text>
               <Button
                 className="bg-blue-600 text-white px-6 py-3 rounded-md font-medium w-full text-center"
-                href="/dashboard/billing"
+                href={`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`}
               >
                 Reactivate Subscription
               </Button>

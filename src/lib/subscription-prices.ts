@@ -10,12 +10,12 @@ export const subscriptionPrices: SubscriptionTier[] = [
     description: FreeTierDescription,
     price: 0,
     currency: "USD",
-    stripePriceId: "",
+    stripePriceId: "", // No Stripe price ID for free tier
     billingInterval: "MONTHLY",
     credits: {
-      monthly: 100,    // 100 free credits per month
-      rollover: false, // Credits don't roll over
-      maximum: 100     // Can't accumulate more than 100
+      monthly: 10,    // 10 free credits per month
+      rollover: false, // Free tier does not support credit rollover - credits are reset monthly
+      maximum: 10     // Can't accumulate more than 10
     }
   },
   {
