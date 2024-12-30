@@ -127,14 +127,31 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
   const price = subscription.items.data[0].price;
   const plan = getPlanFromPrice(price.id);
 
-  // For renewals, reset or update credits
+  // Get current subscription details for proper credit calculation
+  const { data: currentSub, error: fetchError } = await supabase
+    .from('subscription')
+    .select('credits_remaining, credits_reset_count')
+    .eq('subscription_id', subscription.id)
+    .single();
+
+  if (fetchError) throw fetchError;
+
+  // Calculate new credits based on plan's rollover policy
+  let newCredits = plan.credits.monthly;
+  if (plan.credits.rollover && currentSub) {
+    // If rollover is allowed, add monthly credits but don't exceed maximum
+    newCredits = Math.min(
+      currentSub.credits_remaining + plan.credits.monthly,
+      plan.credits.maximum
+    );
+  }
+
+  // For renewals, update credits and reset count
   const { error: updateError } = await supabase
     .from('subscription')
     .update({
-      credits_remaining: plan.credits.monthly,
-      credits_reset_count: subscription.metadata.credits_reset_count 
-        ? parseInt(subscription.metadata.credits_reset_count) + 1 
-        : 1,
+      credits_remaining: newCredits,
+      credits_reset_count: (currentSub?.credits_reset_count || 0) + 1,
       end_date: new Date(subscription.current_period_end * 1000).toISOString()
     })
     .eq('subscription_id', subscription.id);
@@ -146,19 +163,19 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
     await resend.emails.send({
       from: `${process.env.MAIL_FROM_NAME} <${process.env.MAIL_FROM_EMAIL}>`,
       to: invoice.customer_email,
-      subject: 'Payment Received - Credits Renewed',
+      subject: 'Payment Received - Credits Updated',
       react: PaidSubscriptionEmail({
         username: invoice.customer_email.split('@')[0],
         planName: plan.name,
-        amount: plan.price,
-        credits: plan.credits.monthly,
         currency: plan.currency,
+        amount: plan.price,
+        credits: newCredits - (currentSub?.credits_remaining || 0), // Show only new credits added
         billingInterval: plan.billingInterval,
         nextBillingDate: new Date(subscription.current_period_end * 1000).toLocaleDateString('en-US', {
           month: 'long',
           day: 'numeric',
           year: 'numeric'
-        })
+        }),
       })
     });
   }

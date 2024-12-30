@@ -31,6 +31,6 @@ CREATE POLICY credit_history_select_policy ON credit_history
     FOR SELECT USING (
         subscription_id IN (
             SELECT id FROM subscription 
-            WHERE user_id = auth.uid()
+            WHERE user_id::uuid = auth.uid()
         )
     );
