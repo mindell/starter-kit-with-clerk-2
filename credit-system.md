@@ -132,6 +132,53 @@ async function useCredits(userId: string, credits: number) {
    - Credit operations are logged in subscription_audit_log
    - Tracks credit refreshes, usage, and adjustments
 
+## Authentication and Database Access
+
+### Architecture Overview
+The system uses Clerk as the primary authentication provider, while Supabase serves as our database with Row Level Security (RLS). This architecture requires specific considerations for database access.
+
+### Database Access Pattern
+1. **Service Role Access**
+   - All database operations are performed using the Supabase service role
+   - This ensures consistent access regardless of authentication state
+   - Maintains compatibility between Clerk's auth tokens and Supabase's RLS
+
+### Why Service Role?
+Our application uses Clerk for authentication, which means:
+- User IDs are in Clerk's format (e.g., `user_2qL1Z3kmB...`)
+- Database operations are authenticated via Clerk's session
+- RLS policies are designed around service role access
+
+This approach:
+- Ensures reliable database access
+- Maintains security through application-level auth
+- Simplifies database operations
+- Prevents auth-related edge cases
+
+### Best Practices
+1. **Always use service role for database operations**
+   ```typescript
+   // Correct approach
+   const supabase = createClient(cookieStore);
+   ```
+
+2. **Validate user session at the application level**
+   ```typescript
+   // Example: Protected API route
+   const { userId } = auth();
+   if (!userId) throw new Error('Unauthorized');
+   ```
+
+3. **Maintain audit trail for all operations**
+   ```typescript
+   // Log important operations
+   await supabase.from('subscription_audit_log').insert({
+     subscription_id,
+     action,
+     details
+   });
+   ```
+
 ## Customization
 
 ### Modifying Credit Allocation
